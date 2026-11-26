@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Retium Counter · ryn</title>
+<script src="https://wallet.retium.org/connect/sdk/retium-sdk-1.5.0.js"
+        integrity="sha384-IZZw04xxx1GLXviLZ7lw+B5XTi4SNw7Y6fUYf2zdJ8b54pBxVv5KqdvLSjQhZL3v"
+        crossorigin="anonymous"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee}
+main{max-width:560px;margin:0 auto;padding:24px 16px}
+h1{font-size:24px;margin:0 0 4px}.muted{color:#999;font-size:13px}
+.card{background:#1b1b1b;border:1px solid #2c2c2c;border-radius:14px;padding:18px;margin:16px 0}
+.big{font-size:56px;font-weight:700;color:#ff6a2b;text-align:center;margin:8px 0}
+button{width:100%;padding:14px;border-radius:10px;border:0;font-size:16px;font-weight:600;cursor:pointer;margin-top:10px}
+.pri{background:#ff6a2b;color:#111}.sec{background:#2c2c2c;color:#eee}
+button:disabled{opacity:.5;cursor:not-allowed}
+input{width:100%;padding:12px;border-radius:10px;border:1px solid #333;background:#111;color:#eee;font-size:16px}
+code{word-break:break-all;font-size:12px;color:#ccc}#status{min-height:20px;font-size:14px;margin-top:10px}
+ul{padding-left:18px;font-size:13px}li{margin:6px 0;word-break:break-all}a{color:#ff8a55}
+</style>
+</head>
+<body><main>
+<h1>Retium Counter</h1>
+<div class="muted">Kontrak <b>hello_counter</b> di Retium public testnet · dibuat oleh ryn</div>
+
+<div class="card">
+  <div class="muted">Nilai counter saat ini</div>
+  <div class="big" id="value">…</div>
+  <div class="muted">Contract ID:</div>
+  <code id="cid"></code>
+  <button class="sec" id="refresh">Muat ulang</button>
+</div>
+
+<div class="card">
+  <div id="acct" class="muted">Wallet belum tersambung.</div>
+  <button class="pri" id="connect">Connect Retium Wallet</button>
+  <div style="margin-top:14px" class="muted">Langkah bump (1 sampai 1000):</div>
+  <input id="step" type="number" min="1" max="1000" value="1">
+  <button class="pri" id="bump" disabled>Bump</button>
+  <div class="muted">Kamu akan menyetujui panggilan <b>bump</b> ke kontrak di atas, tanpa RTM terlampir. Gas sekitar 0,5 RTM (testnet, tanpa nilai).</div>
+  <div id="status"></div>
+</div>
+
+<div class="card">
+  <div class="muted">Riwayat terbaru (event on-chain)</div>
+  <ul id="events"><li>…</li></ul>
+</div>
+<div class="muted">Dibangun dengan <a href="https://github.com/Retium-Org/retium-sdk">Retium SDK</a>. Koin testnet tidak bernilai.</div>
+</main>
+<script>
+const CONTRACT='32cd815bb1284401bb61cb16dcfa0a19e7ebc4e99a2c7e7219696f0d44d03378';
+const RPC='https://rpc.retium.org';
+const $=id=>document.getElementById(id);
+$('cid').textContent=CONTRACT;
+let account=null,busy=false;
+const short=a=>a?a.slice(0,10)+'…'+a.slice(-6):'';
+function setStatus(t){$('status').textContent=t;}
+
+async function loadValue(){
+  try{const r=await fetch(`${RPC}/api/contract/${CONTRACT}/query?method=value`);const j=await r.json();
+    $('value').textContent=JSON.parse(j.output).data;}catch(e){$('value').textContent='?';}
+}
+async function loadEvents(){
+  try{let after=0,all=[];for(let i=0;i<20;i++){const r=await fetch(`${RPC}/api/contract/${CONTRACT}/events?after=${after}&limit=100`);const j=await r.json();
+      all=all.concat(j.events||[]);if(!j.more)break;after=j.next;}
+    const ul=$('events');ul.innerHTML='';
+    all.slice(-10).reverse().forEach(ev=>{const d=JSON.parse(ev.data||'{}');const li=document.createElement('li');
+      const when=new Date(ev.timestamp).toLocaleString('id-ID');
+      li.textContent=`${ev.event_type}${d.step?' +'+d.step:''}${d.total?' → '+d.total:''} · oleh ${short(d.by||d.owner)} · ${when}`;ul.appendChild(li);});
+    if(!all.length)ul.innerHTML='<li>Belum ada event.</li>';
+  }catch(e){$('events').innerHTML='<li>Gagal memuat riwayat.</li>';}
+}
+async function refresh(){await Promise.all([loadValue(),loadEvents()]);}
+
+async function waitForRetium(ms=600){
+  if(window.retium)return window.retium;
+  return new Promise(res=>{const t=setTimeout(()=>res(window.retium??null),ms);
+    window.addEventListener('retium#initialized',()=>{clearTimeout(t);res(window.retium);},{once:true});});
+}
+$('connect').onclick=async()=>{
+  const retium=await waitForRetium();
+  if(!retium){window.open('https://wallet.retium.org');return;}
+  try{const {address}=await retium.request({method:'retium_requestAccounts'});
+    account=address;$('acct').textContent='Tersambung: '+short(address);$('bump').disabled=false;$('connect').textContent='Tersambung';
+  }catch(e){if(e?.code===4001)return;setStatus('Gagal menyambung: '+(e?.message||e));}
+};
+async function pollTx(txId){
+  for(let i=0;i<120;i++){try{const r=await fetch(`${RPC}/api/transaction/${txId}`);if(r.ok){const t=await r.json();
+      if(t.finality==='HardFinal')return t;}}catch(e){}
+    await new Promise(r=>setTimeout(r,2000));}
+  return null;
+}
+$('bump').onclick=async()=>{
+  if(busy)return;const step=String(parseInt($('step').value,10));
+  if(!/^\d+$/.test(step)||+step<1||+step>1000){setStatus('Langkah harus 1 sampai 1000.');return;}
+  busy=true;$('bump').disabled=true;setStatus('Menunggu persetujuan di wallet…');
+  try{const retium=await waitForRetium();
+    const {txId}=await retium.request({method:'retium_call',params:{contractId:CONTRACT,method:'bump',args:[step],amountAtomic:'0'}});
+    setStatus('Terkirim: '+txId+' · menunggu HardFinal…');
+    const t=await pollTx(txId);
+    if(!t)setStatus('Belum final, cek lagi nanti: '+txId);
+    else if(t.exec_status==='ok')setStatus('Berhasil! '+txId);
+    else setStatus('Ditolak kontrak: '+(t.exec_error||'unknown'));
+    await refresh();
+  }catch(e){
+    if(e?.code===4001)setStatus('Dibatalkan.');
+    else if(e?.code===4301)setStatus('Hasil belum diketahui, jangan kirim ulang. Cek riwayat.');
+    else if(e?.code===4101||e?.code===4102){account=null;$('acct').textContent='Sambungkan ulang wallet.';$('connect').textContent='Connect Retium Wallet';}
+    else setStatus('Gagal: '+(e?.message||e));
+  }finally{busy=false;if(account)$('bump').disabled=false;}
+};
+$('refresh').onclick=refresh;
+refresh();
+</script>
+</body></html>
